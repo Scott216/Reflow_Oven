@@ -1,9 +1,9 @@
-Reflow Oven Controller
+Reflow Oven Controller <br>
 
-Based on http://github.com/CvW/Reflow-Oven-Controller/
-Which is based on: http://github.com/rocketscream/Reflow-Oven-Controller
+Based on http://github.com/CvW/Reflow-Oven-Controller/ <br>
+Which is based on: http://github.com/rocketscream/Reflow-Oven-Controller <br>
 
-Main Changes:
-Replaced MAX6675 with MAX31855
+Main Changes: <br>
+Replaced MAX6675 with MAX31855 <br>
 
 

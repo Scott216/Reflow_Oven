@@ -72,6 +72,7 @@
  * Which is based on http://github.com/rocketscream/Reflow-Oven-Controller
  *
  * Info on PID: http://brettbeauregard.com/blog/2011/04/improving-the-beginners-pid-introduction/
+ * Build instructions: http://www.rocketscream.com/blog/portfolio-item/reflow-controller-shield
  *
  *
  * Rocket Scream Revisions
@@ -100,17 +101,34 @@
  * Revision  Description
  * ========  ===========
  * 1.21      Started with CvW version 1.2 and replaced MAX6675 library with Adafruit_MAX31855, changed some formatting
- *
+ * 1.22      Moved LCD display code to separate function, added NAN error checking on thermocouple, changed profiles to leaded and low temp, changed LED output so HIGH is on
+ 
  *******************************************************************************/
+
+// To do
+// put butons on interrupts
+
+
 
 
 #include <LiquidCrystal.h>      // http://arduino.cc/en/Reference/LiquidCrystal
 #include "Adafruit_MAX31855.h"  // http://github.com/adafruit/Adafruit-MAX31855-library
 #include "PID_v1.h"             // http://github.com/br3ttb/Arduino-PID-Library/
 
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+// Choose output screen
+
+#define SCREENTYPE_OLED32X128
+// #define SCREENTYPE_TWOLINE
+// #define SCREENTYPE_SERIAL
+// #define SCREENTYPE_NODISPLAY
 
 // ***** TYPE DEFINITIONS *****
-typedef enum REFLOW_STATE{
+typedef enum REFLOW_STATE
+{
   REFLOW_STATE_IDLE,
   REFLOW_STATE_PREHEAT,
   REFLOW_STATE_SOAK,
@@ -118,49 +136,58 @@ typedef enum REFLOW_STATE{
   REFLOW_STATE_COOL,
   REFLOW_STATE_COMPLETE,
   REFLOW_STATE_ERROR
-}
-reflowState_t;
+} reflowState_t;
 
-typedef enum REFLOW_STATUS{
+typedef enum REFLOW_STATUS
+{
   REFLOW_STATUS_OFF,
   REFLOW_STATUS_ON
-}
-reflowStatus_t;
+} reflowStatus_t;
 
-typedef enum DEBOUNCE_STATE{
+typedef enum DEBOUNCE_STATE
+{
   DEBOUNCE_STATE_IDLE,
   DEBOUNCE_STATE_CHECK,
   DEBOUNCE_STATE_RELEASE
-}
-debounceState_t;
+} debounceState_t;
 
 // ***** CONSTANTS *****
-#define TEMPERATURE_ROOM 50
-#define SENSOR_SAMPLING_TIME 1000
-#define SOAK_TEMPERATURE_STEP 5
-#define SOAK_MICRO_PERIOD 9000
-#define DEBOUNCE_PERIOD_MIN 50
-#define THERMOCOUPLE_DISCONNECTED 10000
+#define TEMPERATURE_ROOM             50
+#define SENSOR_SAMPLING_TIME       1000
+#define SOAK_TEMPERATURE_STEP         5
+#define SOAK_MICRO_PERIOD          9000
+#define DEBOUNCE_PERIOD_MIN          50
 
-//below temperature constants are for Pb-Free Operation
-int TEMPERATURE_SOAK_MIN = 150;
-int TEMPERATURE_SOAK_MAX = 200;
-int TEMPERATURE_REFLOW_MAX = 250;
-int TEMPERATURE_COOL_MIN = 100;
+
+// Below temperature constants are for Pb-Free Operation
+typedef enum SOLDER_PROFILE
+{
+  LEADED_PROFILE,   // Henkel multicore 583489 (Digikey 82-143-ND), Melts 183 C
+  LOWTEMP_PROFILE   // Chip Quik SMDLTLFP (Digikey SMDLTLFP-ND), Melts at 138 C
+} solderProfile_t;
+
+solderProfile_t ProfileToUse = LEADED_PROFILE; // used in arrays to choose which profile is being used
+// Define profiles.  First element is leaded, 2nd is low temp
+int TEMPERATURE_SOAK_MIN[] =   {100,  90};
+int TEMPERATURE_SOAK_MAX[] =   {150, 120};
+int TEMPERATURE_REFLOW_MAX[] = {215, 175};
+int TEMPERATURE_COOL_MIN[] =   {100, 100};
+
+
 
 // ***** PID PARAMETERS *****
 // ***** PRE-HEAT STAGE *****
-#define PID_KP_PREHEAT 300
-#define PID_KI_PREHEAT 0.05
-#define PID_KD_PREHEAT 400
+#define PID_KP_PREHEAT   300
+#define PID_KI_PREHEAT  0.05
+#define PID_KD_PREHEAT   400
 // ***** SOAKING STAGE *****
-#define PID_KP_SOAK 300
-#define PID_KI_SOAK 0.05
-#define PID_KD_SOAK 250
+#define PID_KP_SOAK      300
+#define PID_KI_SOAK     0.05
+#define PID_KD_SOAK      250
 // ***** REFLOW STAGE *****
-#define PID_KP_REFLOW 300
-#define PID_KI_REFLOW 0.05
-#define PID_KD_REFLOW 350
+#define PID_KP_REFLOW    300
+#define PID_KI_REFLOW   0.05
+#define PID_KD_REFLOW    350
 #define PID_SAMPLE_TIME 1000
 
 // ***** LCD MESSAGES *****
@@ -180,25 +207,31 @@ unsigned char degree[8]  = {140,146,146,140,128,128,128,128};
 
 // ***** PIN ASSIGNMENT *****
 //Don't change so use constants to save memory
-const int thermocoupleSO = A5;
-const int thermocoupleCS = A4;
+const int thermocoupleSO =  A5;
+const int thermocoupleCS =  A4;
 const int thermocoupleCLK = A3;
-const int lcdRs = 7;
-const int lcdE = 8;
-const int lcdD4 = 9;
-const int lcdD5 = 10;
-const int lcdD6 = 11;
-const int lcdD7 = 12;
-const int ledRed = A1;
-const int ledGreen = A0;
-const int button1 = 2;
-const int button2 = 3;
-const int fan = 4;
-const int ssr = 5;
-const int buzzer = 6;
+
+#ifdef SCREENTYPE_TWOLINE
+  const int lcdRs =  7;
+  const int lcdE =   8;
+  const int lcdD4 =  9;
+  const int lcdD5 = 10;
+  const int lcdD6 = 11;
+  const int lcdD7 = 12;
+#endif
+
+
+//const int ledRed =   A1;
+const int ledRed =   13;  // Blinks when oven is on
+const int ledGreen = A0;  // Indicates reflow has completed
+const int button1 = 3;  // Start-stop button
+const int button2 = 2;  // change profile button
+const int fan =     4;
+const int ssr =     5;
+const int buzzer =  6;
 
 // ***** Process Control Variables *****
-byte LeadState=0;
+byte LeadState = 0;
 
 // ***** PID CONTROL VARIABLES *****
 double setpoint;
@@ -214,22 +247,33 @@ unsigned long nextRead;
 unsigned long timerSoak;
 unsigned long buzzerPeriod;
 
-reflowState_t reflowState;     // Reflow oven controller state machine state variable
-reflowStatus_t reflowStatus;   // Reflow oven controller status
+reflowState_t   reflowState;     // Reflow oven controller state machine state variable
+reflowStatus_t  reflowStatus;   // Reflow oven controller status
 debounceState_t debounceState; // Button debounce state machine state variable
-long lastDebounceTime;         // Button debounce timer
-boolean SW1ButtonPressStatus;  // Button press status
-boolean SW2ButtonPressStatus;
-int timerSeconds;              // Seconds timer
+long            lastDebounceTime;         // Button debounce timer
+boolean         SW1ButtonPressStatus;  // Button press status
+boolean         SW2ButtonPressStatus;
+int             timerSeconds;              // Seconds timer
 
 // Specify PID control interface
 PID reflowOvenPID(&input, &output, &setpoint, kp, ki, kd, DIRECT);
 
-// Specify LCD interface
-LiquidCrystal lcd(lcdRs, lcdE, lcdD4, lcdD5, lcdD6, lcdD7);
+#ifdef SCREENTYPE_TWOLINE
+  // Specify LCD interface
+  LiquidCrystal lcd(lcdRs, lcdE, lcdD4, lcdD5, lcdD6, lcdD7);
+#endif
+
+#ifdef SCREENTYPE_OLED32X128
+ const int OLED_RESET = 7;
+ Adafruit_SSD1306 display(OLED_RESET);
+#endif
 
 // Specify thermocouple interface
 Adafruit_MAX31855 thermocouple(thermocoupleCLK, thermocoupleCS, thermocoupleSO);
+
+// Function Prototypes
+void lcdDisplay(int line, const char *lcdText);
+
 
 void setup()
 {
@@ -242,37 +286,37 @@ void setup()
   pinMode(buzzer, OUTPUT);
   
   // Setup LED and pushbutton pins
-  digitalWrite(ledRed, LOW);
-  digitalWrite(ledGreen, LOW);
-  pinMode(ledRed, OUTPUT);
-  pinMode(ledGreen, OUTPUT);
-  pinMode(button1, INPUT);
-  pinMode(button2, INPUT);
-  
-  // Start-up splash
-  digitalWrite(buzzer, HIGH);
-  lcd.begin(8, 2);
-  lcd.createChar(0, degree);
-  lcd.clear();
-  lcd.print("Reflow");
-  lcd.setCursor(0, 1);
-  lcd.print("Oven 1.2");
-  digitalWrite(buzzer, LOW);
-  delay(2500);
-  lcd.clear();
-  
-  Serial.begin(9600);
-  
-  // Turn off LED (active low)
   digitalWrite(ledRed, HIGH);
   digitalWrite(ledGreen, HIGH);
+  pinMode(ledRed,   OUTPUT);
+  pinMode(ledGreen, OUTPUT);
+  pinMode(button1, INPUT_PULLUP);
+  pinMode(button2, INPUT_PULLUP);
+  
+  Serial.begin(9600);
+
+  // Start-up splash
+  digitalWrite(buzzer, HIGH);
+  lcdDisplay(-1, "");
+  lcdDisplay(0, "Reflow");
+  lcdDisplay(1, "Oven 1.22");
+  digitalWrite(buzzer, LOW);
+  delay(2500);
+ 
+  // Turn off LED 
+  digitalWrite(ledRed, LOW);
+  digitalWrite(ledGreen, LOW);
   
   windowSize = 2000;  // Set PID window size
   
-  nextCheck = millis(); // Initialize time keeping variable
+  nextCheck = millis();  // Initialize time keeping variable
   nextRead = millis();   // Initialize thermocouple reading varible
+
+  while (!Serial && millis() < 8000) {}// wait up to 8 seconds for serial monitor t open
+  Serial.println("Finished setup");
   
 }  // setup()
+
 
 void loop()
 {
@@ -284,15 +328,22 @@ void loop()
   {
     // Read thermocouple next sampling period
     nextRead += SENSOR_SAMPLING_TIME;
-    // Read current temperature
-    input = thermocouple.readCelsius();
+    // Read current temperature, loop until you get a valid reading
+    uint32_t waitForValidTempTimer = millis() + 30000;
+    do
+    {
+      input = thermocouple.readCelsius();
+      delay(250);
+    }
+    while ( isnan(input) && (millis() < waitForValidTempTimer) );
     
     // If thermocouple is not connected
-    if (input == THERMOCOUPLE_DISCONNECTED)
+    if (isnan(input) )
     {
       // Illegal operation without thermocouple
       reflowState = REFLOW_STATE_ERROR;
       reflowStatus = REFLOW_STATUS_OFF;
+      Serial.println("Thermocouple Error");
     }
   }
   
@@ -309,38 +360,39 @@ void loop()
       timerSeconds++;
       // Send temperature and time stamp to serial
       Serial.print(timerSeconds);
-      Serial.print(" ");
+      Serial.print("\t");
       Serial.print(setpoint);
-      Serial.print(" ");
+      Serial.print("\t\t");
       Serial.print(input);
-      Serial.print(" ");
-      Serial.println(output);
+      Serial.print("\t\t");
+      Serial.print(reflowState);
+      Serial.print("\t");
+      Serial.print(digitalRead(ssr));
+      Serial.print("\t");
+      Serial.print(digitalRead(fan));
+      Serial.println("");
     }
     else
     {
       // Turn off red LED
-      digitalWrite(ledRed, HIGH);
+      digitalWrite(ledRed, LOW);
     }
     
-    // Clear LCD
-    lcd.clear();
-    // Print current system state
-    lcd.print(lcdMessagesReflowStatus[reflowState]);
-    // Move the cursor to the 2 line
-    lcd.setCursor(0, 1);
+    // Display current system state
+    lcdDisplay(0, lcdMessagesReflowStatus[reflowState]);
     
     // If currently in error state
     if (reflowState == REFLOW_STATE_ERROR)
     {
       // No thermocouple wire connected
-      lcd.print("No TC!");
+      lcdDisplay(1, "No TC!");
     }
     else
     {
       // Print current temperature
-      lcd.print(input);
-      lcd.write((uint8_t)0);
-      lcd.print("C ");
+      char buf[8];
+      sprintf(buf, "%d C", (int) input);
+      lcdDisplay(1, buf);
     }
   }
   
@@ -360,13 +412,13 @@ void loop()
         if (input <= TEMPERATURE_ROOM)
         {
           // Send header for CSV file
-          Serial.println("Time Setpoint Input Output");
+          Serial.println("Time\tSetpoint\tTemp\t\tStage\tssr\tfan");
           // Intialize seconds timer for serial debug information
           timerSeconds = 0;
           // Initialize PID control window starting time
           windowStartTime = millis();
           // Ramp up to minimum soaking temperature
-          setpoint = TEMPERATURE_SOAK_MIN;
+          setpoint = TEMPERATURE_SOAK_MIN[ProfileToUse];
           // Tell the PID to range between 0 and the full window size
           reflowOvenPID.SetOutputLimits(0, windowSize);
           reflowOvenPID.SetSampleTime(PID_SAMPLE_TIME);
@@ -378,17 +430,15 @@ void loop()
         else // temperature inside too high, do not risk thermal shock!
         {
           digitalWrite(buzzer, HIGH);
-          lcd.clear();
-          lcd.print("OvenTemp");
-          lcd.setCursor(0, 1);
-          lcd.print("Too High!");
+          lcdDisplay(0, "OvenTemp");
+          lcdDisplay(1, "Too High!");
+          
           digitalWrite(buzzer, LOW);
           delay(2000);
-          lcd.clear();
           digitalWrite(buzzer, HIGH);
-          lcd.print("Aborting");
-          lcd.setCursor(0, 1);
-          lcd.print("Let Cool");
+          lcdDisplay(0, "Aborting");
+          lcdDisplay(1, "Let Cool");
+          
           digitalWrite(buzzer, LOW);
           delay(2000);
         }
@@ -399,14 +449,14 @@ void loop()
       reflowStatus = REFLOW_STATUS_ON;
       digitalWrite(fan, HIGH); // Fan goes on
       // If minimum soak temperature is achieve
-      if (input >= TEMPERATURE_SOAK_MIN)
+      if (input >= TEMPERATURE_SOAK_MIN[ProfileToUse])
       {
         // Chop soaking period into smaller sub-period
         timerSoak = millis() + SOAK_MICRO_PERIOD;
         // Set less agressive PID parameters for soaking ramp
         reflowOvenPID.SetTunings(PID_KP_SOAK, PID_KI_SOAK, PID_KD_SOAK);
         // Ramp up to first section of soaking temperature
-        setpoint = TEMPERATURE_SOAK_MIN + SOAK_TEMPERATURE_STEP;
+        setpoint = TEMPERATURE_SOAK_MIN[ProfileToUse] + SOAK_TEMPERATURE_STEP;
         // Proceed to soaking state
         reflowState = REFLOW_STATE_SOAK;
       }
@@ -419,12 +469,12 @@ void loop()
         timerSoak = millis() + SOAK_MICRO_PERIOD;
         // Increment micro setpoint
         setpoint += SOAK_TEMPERATURE_STEP;
-        if (setpoint > TEMPERATURE_SOAK_MAX)
+        if (setpoint > TEMPERATURE_SOAK_MAX[ProfileToUse])
         {
           // Set agressive PID parameters for reflow ramp
           reflowOvenPID.SetTunings(PID_KP_REFLOW, PID_KI_REFLOW, PID_KD_REFLOW);
           // Ramp up to first section of soaking temperature
-          setpoint = TEMPERATURE_REFLOW_MAX;
+          setpoint = TEMPERATURE_REFLOW_MAX[ProfileToUse];
           // Proceed to reflowing state
           reflowState = REFLOW_STATE_REFLOW;
         }
@@ -435,12 +485,12 @@ void loop()
       digitalWrite(fan, HIGH); // Fan goes on
       // We need to avoid hovering at peak temperature for too long
       // Crude method that works like a charm and safe for the components
-      if (input >= (TEMPERATURE_REFLOW_MAX - 5))
+      if (input >= (TEMPERATURE_REFLOW_MAX[ProfileToUse] - 5))
       {
         // Set PID parameters for cooling ramp
         reflowOvenPID.SetTunings(PID_KP_REFLOW, PID_KI_REFLOW, PID_KD_REFLOW);
         // Ramp down to minimum cooling temperature
-        setpoint = TEMPERATURE_COOL_MIN;
+        setpoint = TEMPERATURE_COOL_MIN[ProfileToUse];
         // Proceed to cooling state
         reflowState = REFLOW_STATE_COOL;
       }
@@ -448,13 +498,13 @@ void loop()
       
     case REFLOW_STATE_COOL:
       // If minimum cool temperature is achieve
-      if (input <= TEMPERATURE_COOL_MIN)
+      if (input <= TEMPERATURE_COOL_MIN[ProfileToUse])
       {
         digitalWrite(fan, HIGH); // Fan goes on
         // Retrieve current time for buzzer usage
         buzzerPeriod = millis() + 1000;
         // Turn on buzzer and green LED to indicate completion
-        digitalWrite(ledGreen, LOW);
+        digitalWrite(ledGreen, HIGH);
         digitalWrite(buzzer, HIGH);
         // Turn off reflow process
         reflowStatus = REFLOW_STATUS_OFF;
@@ -468,7 +518,7 @@ void loop()
       {
         // Turn off buzzer and green LED
         digitalWrite(buzzer, LOW);
-        digitalWrite(ledGreen, HIGH);
+        digitalWrite(ledGreen, LOW);
         // Reflow process ended
         reflowState = REFLOW_STATE_IDLE;
       }
@@ -476,7 +526,7 @@ void loop()
       
     case REFLOW_STATE_ERROR:
       // If thermocouple is still not connected
-      if (input == THERMOCOUPLE_DISCONNECTED)
+      if (isnan(input))
       {
         // Wait until thermocouple wire is connected
         reflowState = REFLOW_STATE_ERROR;
@@ -502,53 +552,42 @@ void loop()
       reflowState = REFLOW_STATE_IDLE;
     }
   }
+
   
   if (SW2ButtonPressStatus == true)
   {
-    // Switch between lead and lead-free profiles
-    if (LeadState ==0)
+    // Switch between lead and low temp profiles
+    if (LeadState == LOWTEMP_PROFILE)
     {
-      LeadState=1;
+      LeadState = LEADED_PROFILE;
+      ProfileToUse = LEADED_PROFILE;
       digitalWrite(buzzer, HIGH);
-      lcd.clear();
-      lcd.print("Changing");
-      lcd.setCursor(0, 1);
-      lcd.print("to using");
+      lcdDisplay(0, "Changing");
+      lcdDisplay(1, "to using");
+      
       digitalWrite(buzzer, LOW);
       delay(2500);
-      lcd.clear();
-      lcd.print("Leaded");
-      lcd.setCursor(0, 1);
-      lcd.print("Profile!");
+      lcdDisplay(0, "Leaded");
+      lcdDisplay(1, "Profile");
       digitalWrite(buzzer, LOW);
+
       delay(2500);
-      //below temperature constants are for Pb Operation
-      TEMPERATURE_SOAK_MIN = 100;
-      TEMPERATURE_SOAK_MAX = 150;
-      TEMPERATURE_REFLOW_MAX = 232;
-      TEMPERATURE_COOL_MIN = 100;
     }
     else
     {
-      LeadState=0;
+      LeadState = LOWTEMP_PROFILE;
+      ProfileToUse = LOWTEMP_PROFILE;
       digitalWrite(buzzer, HIGH);
-      lcd.clear();
-      lcd.print("Changing");
-      lcd.setCursor(0, 1);
-      lcd.print("to using");
+      lcdDisplay(0, "Changing");
+      lcdDisplay(1, "to using");
+      
       digitalWrite(buzzer, LOW);
       delay(2500);
-      lcd.clear();
-      lcd.print("Pb-Free");
-      lcd.setCursor(0, 1);
-      lcd.print("Profile!");
+      lcdDisplay(0, "Low Temp");
+      lcdDisplay(1, "Profile");
+      
       digitalWrite(buzzer, LOW);
       delay(2500);
-      //below temperature constants are for Pb-Free Operation
-      TEMPERATURE_SOAK_MIN = 150;
-      TEMPERATURE_SOAK_MAX = 200;
-      TEMPERATURE_REFLOW_MAX = 250;
-      TEMPERATURE_COOL_MIN = 100;
     }
   }
   
@@ -628,4 +667,53 @@ void loop()
   {
     digitalWrite(ssr, LOW);
   }
+}
+
+
+// Put LCD display in it's own function so you can more easily use different displays
+void lcdDisplay(int line, const char *lcdText)
+{
+
+#ifdef SCREENTYPE_TWOLINE
+  // if line is negative 1 then initialize the LCD display
+  if (line == -1)
+  {
+    lcd.begin(8, 2);
+    return;
+  }
+
+  if (line == 0)
+  { lcd.clear(); }
+  lcd.setCursor(0, line);
+  lcd.print(lcdText);
+#endif
+
+#ifdef SCREENTYPE_OLED32X128
+  if (line == -1)
+  {
+    display.begin(SSD1306_SWITCHCAPVCC, 0x3C);  // initialize with the I2C addr 0x3C (for the 128x32)
+    display.setTextSize(1);
+    display.setTextColor(WHITE);
+    return;
+  }
+
+  if (line == 0)
+  { display.clearDisplay(); }
+  display.setCursor(1, line * 11);
+  display.print(lcdText);
+  display.display(); // show splashscreen
+
+
+#endif
+  
+#ifdef SCREENTYPE_SERIAL
+  Serial.println(lcdText);
+#endif
+  
+#ifdef SCREENTYPE_NODISPLAY
+  return;
+#endif
+  
+  
+  
 }
