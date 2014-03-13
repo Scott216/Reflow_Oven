@@ -99,7 +99,7 @@
  * 1.22      Moved LCD display code to separate function, added NAN error checking on thermocouple, changed profiles to leaded and low temp, changed LED output so HIGH is on
  * 1.23      Took typedef out of enum, moved buttons to D0 & D1 because of I2C conflict, changed I2C library.  Removed debounce for button #2, it was causing problems where btn1 would make btn2 code run
  * 1.24      Updated profile temperatures, moved some code out of loop() into functions, removed 2 line LCD code.  Added seconds and rate to LCD display.  Changed some variables.
- 
+ * 1.25      Change pins for Mini-Pro, changed C/Sec to average over 5 seconds
  *******************************************************************************/
 
 #include "Adafruit_MAX31855.h"  // http://github.com/adafruit/Adafruit-MAX31855-library
@@ -203,7 +203,33 @@ const char* lcdMessagesReflowStatus[] = {"Ready", "Pre-heat", "Soak", "Reflow", 
 // ***** DEGREE SYMBOL FOR LCD *****
 unsigned char degree[8]  = {140,146,146,140,128,128,128,128};
 
+// Pro Mini Pin Assignemts
+// Thermocouple Breakout
+const int thermocoupleSO =  A2;
+const int thermocoupleCS =  A1;
+const int thermocoupleCLK = A0;
 
+// I/O
+const int ledRed =            4;  // Blinks when oven is on
+const int ledGreen =          8;  // Indicates reflow has completed
+const int cycleStartStopBtn = 2;  // Start-stop button, on interrupt pin (in case you want to use them
+const int changeProfileBtn  = 3;  // Change profile button, , on interrupt pin (in case you want to use them
+const int fan =               5;  // PWM pin
+const int heater =            6;  // SSR Relay
+const int buzzer =            7;
+
+// LCD Display
+const int dispClk =            9;
+const int dispDin =           10;
+const int dispDC =            11;
+const int dispCS =            12;
+const int dispRst =           13;
+ 
+// Pins A4 & A5 are used by I2C
+// Spare D0, D1, A3, A6, A7
+
+
+/*  Leonardo Pins
 // ***** PIN ASSIGNMENT *****
 const int thermocoupleSO =  A5;
 const int thermocoupleCS =  A4;
@@ -219,7 +245,7 @@ const int fan =               4;
 const int heater =            5;
 const int buzzer =            6;
 const int oledReset =         7;
-
+*/
 
 // ***** PID CONTROL VARIABLES *****
 double setpoint;
@@ -243,7 +269,9 @@ int             timerSeconds;          // Seconds timer
 // Specify PID control interface
 PID reflowOvenPID(&input, &output, &setpoint, PID_KP_PREHEAT, PID_KI_PREHEAT, PID_KD_PREHEAT, DIRECT);
 
-Adafruit_SSD1306 display(oledReset);
+Adafruit_SSD1306 display(dispRst);
+// Adafruit_PCD8544 display = Adafruit_PCD8544(dispClk, dispDin, dispDC, dispCS, dispRst);
+
 
 // Specify thermocouple interface
 Adafruit_MAX31855 thermocouple(thermocoupleCLK, thermocoupleCS, thermocoupleSO);
@@ -260,17 +288,11 @@ void printData(printData_t whatToPrint);
 //==============================================================================================================================
 void setup()
 {
-  // Make sure everything is off
-  digitalWrite(heater, LOW);
-  pinMode(heater, OUTPUT);
-  digitalWrite(fan, LOW);
-  pinMode(fan, OUTPUT);
-  digitalWrite(buzzer, LOW);
-  pinMode(buzzer, OUTPUT);
-  
-  // Setup LED and pushbutton pins
-  digitalWrite(ledRed, HIGH);
-  digitalWrite(ledGreen, HIGH);
+
+  // Configure I/O pins
+  pinMode(heater,   OUTPUT);
+  pinMode(fan,      OUTPUT);
+  pinMode(buzzer,   OUTPUT);
   pinMode(ledRed,   OUTPUT);
   pinMode(ledGreen, OUTPUT);
   pinMode(cycleStartStopBtn, INPUT_PULLUP);
@@ -279,21 +301,19 @@ void setup()
   Serial.begin(9600);
 
   // Start-up splash
+  digitalWrite(ledRed,   HIGH);
+  digitalWrite(ledGreen, HIGH);
   digitalWrite(buzzer, HIGH);
   lcdDisplay(-1, "");  // initialze display
   lcdDisplay(0, "Reflow");
-  lcdDisplay(1, "Oven 1.24");
+  lcdDisplay(1, "Oven 1.25");
   digitalWrite(buzzer, LOW);
   delay(1500);
- 
-  // Turn off LEDs
   digitalWrite(ledRed,   LOW);
   digitalWrite(ledGreen, LOW);
   
-  while (!Serial && millis() < 8000) {}// wait up to 8 seconds for serial monitor t open
-
   nextCheck = millis();  // Initialize time keeping variable
-  nextRead = millis();   // Initialize thermocouple reading varible
+  nextRead =  millis();  // Initialize thermocouple reading varible
 
   Serial.println("Finished setup");
   
@@ -309,7 +329,10 @@ void loop()
   static reflowState_t prevReflowState = REFLOW_STATE_IDLE;  // Use to see when reflow state changes
   static float         prevInput = input;                    // Previous temperature used for temp rise / second calc
   static int           stageTimeSeconds = 0;                 // Seconds in current stage
-
+  static float riseRate;
+  static int iRiseRate;
+  static int fRiseRate;
+  
   getTemperature();
   
   if (millis() > nextCheck)
@@ -350,19 +373,28 @@ void loop()
       
       // When stage changes, reset seconds for current stage
       if ( prevReflowState != reflowState )
-      { stageTimeSeconds = 0; }
+      {
+        stageTimeSeconds = 0;
+        prevReflowState = reflowState;
+      }
       
-      // When oven is running, also display time and temperature rise rate
+      // When oven is running, also display time and temperature rise rate (averaged over 5 seconds)
+      
       if ( reflowStatus == REFLOW_STATUS_ON )
       {
-        sprintf(buf, "%d sec", stageTimeSeconds );
-        lcdDisplay(2, buf);
-        
-        int iRiseRate = (int) (input - prevInput);
-        int fRiseRate = ((input - prevInput) - iRiseRate ) * 100;
+        // Update temperature rate every 5 seconds
+        if ( stageTimeSeconds % 5 == 0)
+        {
+          riseRate = (input - prevInput) / 5.0;
+          iRiseRate = (int) riseRate;
+          fRiseRate = (riseRate - iRiseRate ) * 100;
+          prevInput = input;
+        }
         sprintf(buf, "%d.%d C/Sec", iRiseRate, fRiseRate );
+        lcdDisplay(2, buf);
+
+        sprintf(buf, "%d sec", stageTimeSeconds );
         lcdDisplay(3, buf);
-        prevInput = input;
       }
     }
   }  // end nextCheck
@@ -397,7 +429,6 @@ void loop()
           reflowOvenPID.SetMode(AUTOMATIC);
           // Proceed to preheat stage
           reflowState = REFLOW_STATE_PREHEAT;
-          Serial.println("In idle mode"); // srg debug
         }
         else // temperature inside too high, do not risk thermal shock!
         {
@@ -592,7 +623,6 @@ void checkButtons()
     }
   }
   
-  
   // Simple button debounce state machine, for cycleStartStop button only
   // Change profile doesn't need debounce because there is delay in displaying profile change info
   switch (debounceState)
@@ -632,7 +662,6 @@ void checkButtons()
       break;
   }  // end switch(debounceState)
   
-  
 }  // end checkButtons()
 
 
@@ -643,7 +672,7 @@ void checkButtons()
 void lcdDisplay(int line, const char *lcdText)
 {
 
-  if ( line > 1 )  // srg - remove this after you get new display
+  if ( line > 2 )  // srg - remove this after you get new display
   {return;}
   
   
@@ -679,7 +708,7 @@ void printData(printData_t whatToPrint)
   
   if (whatToPrint == PRINT_HEADER )
   {
-    Serial.println("Time\tSetpoint\tTemp\t\tStage\theater\tfan");
+    Serial.println("Time\tSetpoint\tTemp      \tStage\theater\tfan\tSolder");
   }
   else
   {
@@ -687,15 +716,18 @@ void printData(printData_t whatToPrint)
     Serial.print(timerSeconds);
     Serial.print("\t");
     Serial.print(setpoint);
-    Serial.print("\t\t");
+    Serial.print("   \t");
     Serial.print(input);
-    Serial.print("\t\t");
+    Serial.print("   \t");
     Serial.print(reflowState);
     Serial.print("\t");
     Serial.print(digitalRead(heater));
     Serial.print("\t");
     Serial.print(digitalRead(fan));
+    Serial.print("\t");
+    Serial.print(solderType);
     Serial.println("");
+    
   }
 
 }  // end printData()
