@@ -45,3 +45,18 @@ See if buzzer works on 3v
 PCB Design
 Have 4 port terminal block in case you want to use IR sesnsor, it's I2C
 Power thermocouple breakout board on 3 volt Vo pin - verify this will work
+
+
+
+
+1       1       1       0
+26      130.00          27.00           1       1       1       0
+27.00   30.00   -0.60   0       -60
+27      130.00          26.75           1       1       1       0
+28      130.00          26.50           1       1       1       0
+29      130.00          26.50           1       1       1       0
+30      130.00          26.25           1       1       1       0
+31      130.00          26.00           1       1       1       0
+26.00   27.00   -0.20   0       -20
+32      130.00          26.00           1       1       1       0
+33      130.00          26.00       
