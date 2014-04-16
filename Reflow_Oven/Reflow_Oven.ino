@@ -99,15 +99,17 @@
  * 1.22      Moved LCD display code to separate function, added NAN error checking on thermocouple, changed profiles to leaded and low temp, changed LED output so HIGH is on
  * 1.23      Took typedef out of enum, moved buttons to D0 & D1 because of I2C conflict, changed I2C library.  Removed debounce for button #2, it was causing problems where btn1 would make btn2 code run
  * 1.24      Updated profile temperatures, moved some code out of loop() into functions, removed 2 line LCD code.  Added seconds and rate to LCD display.  Changed some variables.
- * 1.25      Change pins for Mini-Pro, changed C/Sec to average over 5 seconds
+ * 1.25      Change pins for Pro-Mini, changed C/Sec to average over 5 seconds
+ * 1.26      Changed display to Nokia 5110, tested for negative rate change so it will display properly
+ * 1.27      Changed I/O pins, added pin for LED backlight
+ * 1.28      When calling for heat, top and bottom heaters will altenrate coming on.
+ * 1.29      Reversed LED output (Low = on), made display text 3 lines.  Changed fan from digital to PWM
  *******************************************************************************/
 
 #include "Adafruit_MAX31855.h"  // http://github.com/adafruit/Adafruit-MAX31855-library
-#include "I2C.h"                // http://github.com/rambo/I2C
 #include "PID_v1.h"             // http://github.com/br3ttb/Arduino-PID-Library/
 #include "Adafruit_GFX.h"       // https://github.com/adafruit/Adafruit-GFX-Library
-#include "SSD1306_I2C_DSS.h"    // For OLED  http://github.com/Scott216/SSD1306_I2C_DSS
-// #include "Adafruit_PCD8544"     // http://github.com/adafruit/Adafruit-PCD8544-Nokia-5110-LCD-library
+#include "Adafruit_PCD8544.h"   // http://github.com/adafruit/Adafruit-PCD8544-Nokia-5110-LCD-library
 
 
 // ***** TYPE DEFINITIONS *****
@@ -205,47 +207,33 @@ unsigned char degree[8]  = {140,146,146,140,128,128,128,128};
 
 // Pro Mini Pin Assignemts
 // Thermocouple Breakout
-const int thermocoupleSO =  A2;
-const int thermocoupleCS =  A1;
-const int thermocoupleCLK = A0;
+const int thermocoupleSO =  A3;
+const int thermocoupleCS =  A2;
+const int thermocoupleCLK = A1;
 
 // I/O
-const int ledRed =            4;  // Blinks when oven is on
-const int ledGreen =          8;  // Indicates reflow has completed
-const int cycleStartStopBtn = 2;  // Start-stop button, on interrupt pin (in case you want to use them
-const int changeProfileBtn  = 3;  // Change profile button, , on interrupt pin (in case you want to use them
-const int fan =               5;  // PWM pin
-const int heater =            6;  // SSR Relay
-const int buzzer =            7;
+const int spareBtn =          1;  // Spare pushbutton
+const int changeProfileBtn  = 2;  // Change profile button, , on interrupt pin (in case you want to use them
+const int cycleStartStopBtn = 3;  // Start-stop button, on interrupt pin (in case you want to use them
+const int grnLED =            4;  // Blinks when oven is on
+const int buzzer =            5;
+const int fan =               6;  // PWM pin
+const int heater_top =        7;
+const int heater_bottom =     8;
 
 // LCD Display
-const int dispClk =            9;
-const int dispDin =           10;
-const int dispDC =            11;
-const int dispCS =            12;
-const int dispRst =           13;
+const int dispLED =            9; // pull low to turn backlight off, PWM pin
+const int dispClk =           A0;
+const int dispDin =           13;
+const int dispDC =            12;
+const int dispCS =            11;
+const int dispRst =           10;
  
-// Pins A4 & A5 are used by I2C
-// Spare D0, D1, A3, A6, A7
 
+// Spare D0, A4, A6, A7
 
-/*  Leonardo Pins
-// ***** PIN ASSIGNMENT *****
-const int thermocoupleSO =  A5;
-const int thermocoupleCS =  A4;
-const int thermocoupleCLK = A3;
-
-// Pins D2 & D3 are used by I2C
-
-const int ledRed =           13;  // Blinks when oven is on
-const int ledGreen =         A0;  // Indicates reflow has completed
-const int cycleStartStopBtn = 0;    // Start-stop button
-const int changeProfileBtn  = 1;    // change profile button
-const int fan =               4;
-const int heater =            5;
-const int buzzer =            6;
-const int oledReset =         7;
-*/
+const int ledOn = LOW;   // green LEDs on orig circuit board are on when LOW
+const int ledOff = HIGH;
 
 // ***** PID CONTROL VARIABLES *****
 double setpoint;
@@ -269,8 +257,8 @@ int             timerSeconds;          // Seconds timer
 // Specify PID control interface
 PID reflowOvenPID(&input, &output, &setpoint, PID_KP_PREHEAT, PID_KI_PREHEAT, PID_KD_PREHEAT, DIRECT);
 
-Adafruit_SSD1306 display(dispRst);
-// Adafruit_PCD8544 display = Adafruit_PCD8544(dispClk, dispDin, dispDC, dispCS, dispRst);
+// Adafruit_SSD1306 display(dispRst);
+Adafruit_PCD8544 display = Adafruit_PCD8544(dispClk, dispDin, dispDC, dispCS, dispRst);
 
 
 // Specify thermocouple interface
@@ -290,27 +278,29 @@ void setup()
 {
 
   // Configure I/O pins
-  pinMode(heater,   OUTPUT);
-  pinMode(fan,      OUTPUT);
-  pinMode(buzzer,   OUTPUT);
-  pinMode(ledRed,   OUTPUT);
-  pinMode(ledGreen, OUTPUT);
+  pinMode(dispLED,       OUTPUT);
+  pinMode(heater_top,    OUTPUT);
+  pinMode(heater_bottom, OUTPUT);
+  pinMode(fan,           OUTPUT);
+  pinMode(buzzer,        OUTPUT);
+  pinMode(grnLED,        OUTPUT);
   pinMode(cycleStartStopBtn, INPUT_PULLUP);
   pinMode(changeProfileBtn,  INPUT_PULLUP);
+  pinMode(spareBtn,          INPUT_PULLUP);
+  
+  analogWrite(dispLED, 127);  // turn backlignt on at 50%
   
   Serial.begin(9600);
 
   // Start-up splash
-  digitalWrite(ledRed,   HIGH);
-  digitalWrite(ledGreen, HIGH);
+  digitalWrite(grnLED,   ledOn);
   digitalWrite(buzzer, HIGH);
   lcdDisplay(-1, "");  // initialze display
   lcdDisplay(0, "Reflow");
-  lcdDisplay(1, "Oven 1.25");
+  lcdDisplay(1, "Oven 1.29");
   digitalWrite(buzzer, LOW);
   delay(1500);
-  digitalWrite(ledRed,   LOW);
-  digitalWrite(ledGreen, LOW);
+  digitalWrite(grnLED, ledOff);
   
   nextCheck = millis();  // Initialize time keeping variable
   nextRead =  millis();  // Initialize thermocouple reading varible
@@ -329,9 +319,6 @@ void loop()
   static reflowState_t prevReflowState = REFLOW_STATE_IDLE;  // Use to see when reflow state changes
   static float         prevInput = input;                    // Previous temperature used for temp rise / second calc
   static int           stageTimeSeconds = 0;                 // Seconds in current stage
-  static float riseRate;
-  static int iRiseRate;
-  static int fRiseRate;
   
   getTemperature();
   
@@ -343,8 +330,8 @@ void loop()
     // If reflow process is on going
     if (reflowStatus == REFLOW_STATUS_ON)
     {
-      // Toggle red LED as system heart beat
-      digitalWrite(ledRed, !(digitalRead(ledRed)));
+      // Toggle LED as system heart beat
+      digitalWrite(grnLED, !(digitalRead(grnLED)));
       // Increase seconds timer for reflow curve analysis
       timerSeconds++;
       stageTimeSeconds++;  // number of seconds in current stage
@@ -352,7 +339,7 @@ void loop()
       printData(PRINT_DATA);
     }
     else
-    { digitalWrite(ledRed, LOW); }
+    { digitalWrite(grnLED, ledOff); }
     
     // Display current system state
     if (input > TEMPERATURE_ROOM && reflowState == REFLOW_STATE_IDLE)
@@ -379,18 +366,35 @@ void loop()
       }
       
       // When oven is running, also display time and temperature rise rate (averaged over 5 seconds)
-      
+      static float riseRate;
+      static int iRiseRate;
+      static int fRiseRate;
+      static bool isPositiveRate;
       if ( reflowStatus == REFLOW_STATUS_ON )
       {
-        // Update temperature rate every 5 seconds
+        // Update temperature rate every 5 seconds,
+        // Need check if rate is negative or positive and put a negative in sprintf because if the rate is -0.5, you can't have -0 as the integer portion
         if ( stageTimeSeconds % 5 == 0)
         {
-          riseRate = (input - prevInput) / 5.0;
+          if ( input >= prevInput )
+          {
+            riseRate = (input - prevInput) / 5.0;
+            isPositiveRate = true;
+          }
+          else
+          {
+            riseRate = (prevInput - input) / 5.0;
+            isPositiveRate = false;
+          }
           iRiseRate = (int) riseRate;
           fRiseRate = (riseRate - iRiseRate ) * 100;
           prevInput = input;
         }
-        sprintf(buf, "%d.%d C/Sec", iRiseRate, fRiseRate );
+        if ( isPositiveRate )
+        { sprintf(buf, "%d.%d C/Sec", iRiseRate, fRiseRate ); }
+        else
+        { sprintf(buf, "-%d.%d C/Sec", iRiseRate, fRiseRate ); }
+        
         lcdDisplay(2, buf);
 
         sprintf(buf, "%d sec", stageTimeSeconds );
@@ -405,9 +409,9 @@ void loop()
   {
     case REFLOW_STATE_IDLE:
       if ( input > TEMPERATURE_ROOM )
-      { digitalWrite(fan, HIGH); } // Turn fan on if temp is > room temperature
+      { analogWrite(fan, 124); } // Turn fan on if temp is > room temperature
       else
-      { digitalWrite(fan, LOW); }
+      { analogWrite(fan, 0); }
       
       // If button is pressed to start reflow process
       if ( cycleStartStopStatus == true )
@@ -443,7 +447,7 @@ void loop()
       
     case REFLOW_STATE_PREHEAT:
       reflowStatus = REFLOW_STATUS_ON;
-      digitalWrite(fan, HIGH);
+      analogWrite(fan, 124);
       // If minimum soak temperature is achieve
       if (input >= TEMPERATURE_SOAK_MIN[solderType])
       {
@@ -459,7 +463,7 @@ void loop()
       break;
       
     case REFLOW_STATE_SOAK:
-      digitalWrite(fan, HIGH);
+      analogWrite(fan, 124);
       // If micro soak temperature is achieved
       if (millis() > timerSoak)
       {
@@ -479,7 +483,7 @@ void loop()
       break;
       
     case REFLOW_STATE_REFLOW:
-      digitalWrite(fan, HIGH);
+      analogWrite(fan, 124);
       // Avoid hovering at peak temperature for too long
       // Crude method that works like a charm and safe for the components
       if (input >= (TEMPERATURE_REFLOW_MAX[solderType] - 5))
@@ -497,11 +501,10 @@ void loop()
       // If minimum cool temperature is achieve
       if (input <= TEMPERATURE_COOL_MIN[solderType])
       {
-        digitalWrite(fan, HIGH);
+        analogWrite(fan, 124);
         // Retrieve current time for buzzer usage
         buzzerPeriod = millis() + 1000;
         // Turn on buzzer and green LED to indicate completion
-        digitalWrite(ledGreen, HIGH);
         digitalWrite(buzzer,   HIGH);
         // Turn off reflow process
         reflowStatus = REFLOW_STATUS_OFF;
@@ -514,7 +517,6 @@ void loop()
       if (millis() > buzzerPeriod)
       {
         digitalWrite(buzzer,   LOW);
-        digitalWrite(ledGreen, LOW);
         reflowState = REFLOW_STATE_IDLE; // Reflow process ended
       }
       break;
@@ -542,13 +544,13 @@ void loop()
     if((now - windowStartTime) > windowSize)
     {   windowStartTime += windowSize;  }  // Time to shift the Relay Window
     if( output > (now - windowStartTime) )
-    { digitalWrite(heater, HIGH); }
+    { setHeatOn(); }
     else 
-    { digitalWrite(heater, LOW); }
+    { setHeatOff(); }
   }
   // Reflow oven process is off, ensure oven is off
   else 
-  { digitalWrite(heater, LOW); }
+  { setHeatOff(); }
   
 } // end loop()
 
@@ -611,14 +613,16 @@ void checkButtons()
     {
       solderType = LEADED_PROFILE;
       lcdDisplay(0, "Changing to");
-      lcdDisplay(1, "Leaded Profile");
+      lcdDisplay(1, "Leaded");
+      lcdDisplay(2, "Profile");
       delay(2000);
     }
     else
     {
       solderType = LOWTEMP_PROFILE;
       lcdDisplay(0, "Changing to");
-      lcdDisplay(1, "Low Temp Profile");
+      lcdDisplay(1, "Low Temp");
+      lcdDisplay(2, "Profile");
       delay(2000);
     }
   }
@@ -672,20 +676,12 @@ void checkButtons()
 void lcdDisplay(int line, const char *lcdText)
 {
 
-  if ( line > 2 )  // srg - remove this after you get new display
-  {return;}
-  
-  
   if (line == -1)
   {
-    // Initialize I2C communication
-    I2c.begin();
-    I2c.timeOut(30000);  // set I2C timeout to 30 seconds
-    I2c.pullup(0);       // disable internal pullup resistors on I2C pins
-    
-    display.begin(SSD1306_SWITCHCAPVCC, 0x3C);  // initialize with the I2C addr 0x3C (for the 128x32)
+    display.begin();
     display.setTextSize(1);
-    display.setTextColor(WHITE);
+    display.setTextColor(BLACK);
+    display.setContrast(60);
     return;
   }
 
@@ -696,9 +692,36 @@ void lcdDisplay(int line, const char *lcdText)
   display.print(lcdText);
   display.display(); // show splashscreen
 
-
 } // end lcdDisplay()
 
+
+// When heat is called for, alternate between top and bottom heat every second
+void setHeatOn()
+{
+  static uint32_t flipFlopTimer = millis(); // initialize timer
+  
+  if (long(millis() - flipFlopTimer) > 0)
+  {
+     flipFlopTimer = millis() + 1000;
+    if (digitalRead(heater_top) == LOW)
+    {
+      digitalWrite(heater_top, HIGH);
+      digitalWrite(heater_bottom, LOW);
+    }
+    else
+    {
+      digitalWrite(heater_top, LOW);
+      digitalWrite(heater_bottom, HIGH);
+    }
+  }
+  
+}  //setHeatOnIO
+
+void setHeatOff()
+{
+  digitalWrite(heater_top, LOW);
+  digitalWrite(heater_bottom, LOW);
+} // setHeatOff()
 
 //==============================================================================================================================
 //  Print data to serial printer
@@ -721,9 +744,9 @@ void printData(printData_t whatToPrint)
     Serial.print("   \t");
     Serial.print(reflowState);
     Serial.print("\t");
-    Serial.print(digitalRead(heater));
+    Serial.print(digitalRead(heater_top));
     Serial.print("\t");
-    Serial.print(digitalRead(fan));
+    Serial.print(analogRead(fan));
     Serial.print("\t");
     Serial.print(solderType);
     Serial.println("");
