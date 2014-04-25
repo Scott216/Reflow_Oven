@@ -1,3 +1,8 @@
+// to do
+// had hall effect sensor to detect fan current and shut down if too high - maybe
+// put a switch on the fan - maybel
+
+
 /*******************************************************************************
  * Title: Reflow Oven Controller
  * Company: Rocket Scream Electronics
@@ -36,6 +41,7 @@
  *  0  |_ _ _ _ _ _ _ _|_ _ _ _ _ _ _ _ _ _|_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
  *                                 Time (Seconds)
  *
+ * Kester's standard leaded profile http://www.kester.com/kester-content/uploads/2013/06/Standard_Profile.pdf
  * This firmware owed very much on the works of other talented individuals as
  * follows:
  * ==========================================
@@ -104,6 +110,9 @@
  * 1.27      Changed I/O pins, added pin for LED backlight
  * 1.28      When calling for heat, top and bottom heaters will altenrate coming on.
  * 1.29      Reversed LED output (Low = on), made display text 3 lines.  Changed fan from digital to PWM
+ * 1.30      Buzzer sounds and each stage in reflow.  Adjusted heat on to better balance top and bottom heaters, display profile when idle
+ * 1.31      Added mircostepping temp target to pre-heat stage, show setpoint temp in display
+ * 1.32      Fan was not turning off after cool period was over, should be fixed now 
  *******************************************************************************/
 
 #include "Adafruit_MAX31855.h"  // http://github.com/adafruit/Adafruit-MAX31855-library
@@ -140,10 +149,12 @@ enum debounceState_t
 enum printData_t { PRINT_HEADER, PRINT_DATA};
   
 // ***** CONSTANTS *****
-#define TEMPERATURE_ROOM             50
+#define TEMPERATURE_ROOM             50   // Temp must be below this to start a new reflow
 #define SENSOR_SAMPLING_TIME       1000
-#define SOAK_TEMPERATURE_STEP         5
-#define SOAK_MICRO_PERIOD          9000
+#define PREHT_TEMPERATURE_STEP        5   // increment pre-heat temp in 5 degree steps
+#define SOAK_TEMPERATURE_STEP         5   // increment soak temp in 5 degree steps
+#define PREHT_MICRO_PERIOD         4250   // set new pre-heat target temp every 4-1/4 seconds
+#define SOAK_MICRO_PERIOD          9000   // set new soak target temp evey 9 seconds
 #define DEBOUNCE_PERIOD_MIN          50
 
 
@@ -166,14 +177,21 @@ solderProfile_t solderType = LEADED_PROFILE; // used in arrays to choose which p
 //   Reflow:    30-75 sec, 205-225°C
 //   Cooling:     25+ sec, 100°C
 
-// Low Temp Solder : Chip Quik SMDLTLFP Sn42Bi58 (42/58) (Digikey SMDLTLFP-ND)
-// Data Sheet http://bit.ly/1cRVSGo
-// Desired Profile:
+// Low Temp Solder: Chip Quik SMDLTLFP Sn42Bi58 (42/58) (Digikey SMDLTLFP-ND)
+// Low Temp Profile:
 //   Preheat:     120 sec, 90-120°C
 //   Soaking:   60-90 sec, 90-130°C
 //   Reflow:    30-60 sec, 158-165°C
 //   Cooling:     15+ sec, 100°C
-//                             Leaded  Low Temp
+//
+// Leaded solder: Multicore 583489, Digikey 82-143-ND,
+// Leaded Profile
+//   Preheat:    60-90 sec, 130-165°C
+//   Soaking:   60-120 sec, 130-165°C
+//   Reflow:    90-120 sec, 205-225°C
+//   Cooling:      15+ sec, 100°C
+// Data Sheet  http://bit.ly/1cRVSGo
+//                             Leaded   Low Temp
 int TEMPERATURE_SOAK_MIN[] =   {130,       90};
 int TEMPERATURE_SOAK_MAX[] =   {165,      130};
 int TEMPERATURE_REFLOW_MAX[] = {220,      165};
@@ -202,9 +220,6 @@ int TEMPERATURE_COOL_MIN[] =   {100,      100};
 // ***** LCD MESSAGES *****
 const char* lcdMessagesReflowStatus[] = {"Ready", "Pre-heat", "Soak", "Reflow", "Cool", "Complete", "Error" };
 
-// ***** DEGREE SYMBOL FOR LCD *****
-unsigned char degree[8]  = {140,146,146,140,128,128,128,128};
-
 // Pro Mini Pin Assignemts
 // Thermocouple Breakout
 const int thermocoupleSO =  A3;
@@ -216,7 +231,7 @@ const int spareBtn =          1;  // Spare pushbutton
 const int changeProfileBtn  = 2;  // Change profile button, , on interrupt pin (in case you want to use them
 const int cycleStartStopBtn = 3;  // Start-stop button, on interrupt pin (in case you want to use them
 const int grnLED =            4;  // Blinks when oven is on
-const int buzzer =            5;
+const int buzzer =            5;  // PWM pin - useful if you want to use a piezo buzzer
 const int fan =               6;  // PWM pin
 const int heater_top =        7;
 const int heater_bottom =     8;
@@ -228,12 +243,12 @@ const int dispDin =           13;
 const int dispDC =            12;
 const int dispCS =            11;
 const int dispRst =           10;
- 
 
 // Spare D0, A4, A6, A7
 
-const int ledOn = LOW;   // green LEDs on orig circuit board are on when LOW
+const int ledOn = LOW;   // green LEDs on original circuit board are on when LOW (uses PNP transistor)
 const int ledOff = HIGH;
+const byte FAN_ON = 255;
 
 // ***** PID CONTROL VARIABLES *****
 double setpoint;
@@ -244,8 +259,10 @@ const int windowSize = 2000;     // Set PID window size
 uint32_t windowStartTime;
 uint32_t nextCheck;
 uint32_t nextRead;
-uint32_t timerSoak;
-uint32_t buzzerPeriod;
+uint32_t timerPreHeat;           // Timer used for micro-stepping setpoint in Pre-heat stage
+uint32_t timerSoak;              // Timer used for micro-stepping setpoint in Soak stage
+uint32_t buzzerPeriod;           // Time for buzzer
+
 
 reflowState_t   reflowState;           // Reflow oven controller state machine state variable
 reflowStatus_t  reflowStatus;          // Reflow oven controller status
@@ -269,6 +286,8 @@ Adafruit_MAX31855 thermocouple(thermocoupleCLK, thermocoupleCS, thermocoupleSO);
 void getTemperature();
 void checkButtons();
 void lcdDisplay(int line, const char *lcdText);
+void setHeatOn();
+void setHeatOff();
 void printData(printData_t whatToPrint);
 
 
@@ -276,7 +295,6 @@ void printData(printData_t whatToPrint);
 //==============================================================================================================================
 void setup()
 {
-
   // Configure I/O pins
   pinMode(dispLED,       OUTPUT);
   pinMode(heater_top,    OUTPUT);
@@ -292,15 +310,14 @@ void setup()
   
   Serial.begin(9600);
 
-  // Start-up splash
-  digitalWrite(grnLED,   ledOn);
-  digitalWrite(buzzer, HIGH);
+  // Start-up
   lcdDisplay(-1, "");  // initialze display
   lcdDisplay(0, "Reflow");
-  lcdDisplay(1, "Oven 1.29");
+  lcdDisplay(1, "Oven 1.32");
+  digitalWrite(buzzer, HIGH);
+  delay(500);
   digitalWrite(buzzer, LOW);
-  delay(1500);
-  digitalWrite(grnLED, ledOff);
+  delay(1000);
   
   nextCheck = millis();  // Initialize time keeping variable
   nextRead =  millis();  // Initialize thermocouple reading varible
@@ -314,7 +331,6 @@ void setup()
 //==============================================================================================================================
 void loop()
 {
-  
   // Initialize static variables
   static reflowState_t prevReflowState = REFLOW_STATE_IDLE;  // Use to see when reflow state changes
   static float         prevInput = input;                    // Previous temperature used for temp rise / second calc
@@ -350,14 +366,30 @@ void loop()
     
     // If currently in error state
     if (reflowState == REFLOW_STATE_ERROR)
-    {  lcdDisplay(1, "TC Error!"); } // // No thermocouple wire connected
+    {  lcdDisplay(1, "TC Error!"); } // No thermocouple wire connected
     else
     {
-      // Print current temperature
       char buf[20];
-      sprintf(buf, "%d C", (int) input);
-      lcdDisplay(1, buf);
       
+      // If idle, display temp and currently selected profile
+      if (reflowState == REFLOW_STATE_IDLE) 
+      {
+        // Display current temperature
+        sprintf(buf, "%dC", (int) input);
+        lcdDisplay(1, buf);
+        // display profile
+        if (solderType == LOWTEMP_PROFILE)
+        { lcdDisplay(2, "Low Temp"); }
+        else
+        { lcdDisplay(2, "Leaded"); }
+        lcdDisplay(3, "Profile");
+      }
+      else
+      { 
+        // not idle, display current temp and setpoing temp
+        sprintf(buf, "%dC, SP %dC", (int) input, (int) setpoint );
+        lcdDisplay(1, buf);
+      }
       // When stage changes, reset seconds for current stage
       if ( prevReflowState != reflowState )
       {
@@ -408,10 +440,7 @@ void loop()
   switch (reflowState)
   {
     case REFLOW_STATE_IDLE:
-      if ( input > TEMPERATURE_ROOM )
-      { analogWrite(fan, 124); } // Turn fan on if temp is > room temperature
-      else
-      { analogWrite(fan, 0); }
+      analogWrite(fan, 0);
       
       // If button is pressed to start reflow process
       if ( cycleStartStopStatus == true )
@@ -419,13 +448,17 @@ void loop()
         // Ensure current temperature is comparable to room temperature
         if (input <= TEMPERATURE_ROOM)
         {
+          digitalWrite(buzzer, HIGH);
+          delay(100);
+          digitalWrite(buzzer, LOW);
           printData(PRINT_HEADER);
           // Intialize seconds timer for serial debug information
           timerSeconds = 0;
           // Initialize PID control window starting time
           windowStartTime = millis();
-          // Ramp up to minimum soaking temperature
-          setpoint = TEMPERATURE_SOAK_MIN[solderType];
+          // Ramp up to first section of pre-heat temperature
+          setpoint = input + PREHT_TEMPERATURE_STEP;
+          
           // Tell the PID to range between 0 and the full window size
           reflowOvenPID.SetOutputLimits(0, windowSize);
           reflowOvenPID.SetSampleTime(PID_SAMPLE_TIME);
@@ -447,23 +480,38 @@ void loop()
       
     case REFLOW_STATE_PREHEAT:
       reflowStatus = REFLOW_STATUS_ON;
-      analogWrite(fan, 124);
-      // If minimum soak temperature is achieve
-      if (input >= TEMPERATURE_SOAK_MIN[solderType])
+      if (millis() > buzzerPeriod)
+      { digitalWrite(buzzer, LOW); }
+      analogWrite(fan, FAN_ON);
+      
+
+      // If micro pre-heat temperature is achieved
+      if (millis() > timerPreHeat)
       {
-        // Chop soaking period into smaller sub-period
-        timerSoak = millis() + SOAK_MICRO_PERIOD;
-        // Set less agressive PID parameters for soaking ramp
-        reflowOvenPID.SetTunings(PID_KP_SOAK, PID_KI_SOAK, PID_KD_SOAK);
-        // Ramp up to first section of soaking temperature
-        setpoint = TEMPERATURE_SOAK_MIN[solderType] + SOAK_TEMPERATURE_STEP;
-        // Proceed to soaking state
-        reflowState = REFLOW_STATE_SOAK;
+        timerPreHeat = millis() + PREHT_MICRO_PERIOD;  // Increase setpoint temp in small steps
+        // Increment micro setpoint
+        setpoint += PREHT_TEMPERATURE_STEP;
+        // If minimum soak temperature is achieved
+        if (input >= TEMPERATURE_SOAK_MIN[solderType])
+        {
+          // Chop soaking period into smaller sub-period
+          timerSoak = millis() + SOAK_MICRO_PERIOD; // First target temp for soak cycle with is about to start
+          // Set less agressive PID parameters for soaking ramp
+          reflowOvenPID.SetTunings(PID_KP_SOAK, PID_KI_SOAK, PID_KD_SOAK);
+          // Ramp up to first section of soaking temperature
+          setpoint = TEMPERATURE_SOAK_MIN[solderType] + SOAK_TEMPERATURE_STEP;
+          // Proceed to soaking state
+          reflowState = REFLOW_STATE_SOAK;
+          digitalWrite(buzzer,  HIGH);
+          buzzerPeriod = millis() + 100;
+        }
       }
       break;
       
     case REFLOW_STATE_SOAK:
-      analogWrite(fan, 124);
+      if (millis() > buzzerPeriod)
+      { digitalWrite(buzzer, LOW); }
+      analogWrite(fan, FAN_ON);
       // If micro soak temperature is achieved
       if (millis() > timerSoak)
       {
@@ -478,12 +526,16 @@ void loop()
           setpoint = TEMPERATURE_REFLOW_MAX[solderType];
           // Proceed to reflowing state
           reflowState = REFLOW_STATE_REFLOW;
+          digitalWrite(buzzer, HIGH);
+          buzzerPeriod = millis() + 100;
         }
       }
       break;
       
     case REFLOW_STATE_REFLOW:
-      analogWrite(fan, 124);
+      if (millis() > buzzerPeriod)
+      { digitalWrite(buzzer, LOW); }
+      analogWrite(fan, FAN_ON);
       // Avoid hovering at peak temperature for too long
       // Crude method that works like a charm and safe for the components
       if (input >= (TEMPERATURE_REFLOW_MAX[solderType] - 5))
@@ -494,17 +546,21 @@ void loop()
         setpoint = TEMPERATURE_COOL_MIN[solderType];
         // Proceed to cooling state
         reflowState = REFLOW_STATE_COOL;
+        digitalWrite(buzzer, HIGH);
+        buzzerPeriod = millis() + 100;
       }
       break;
       
     case REFLOW_STATE_COOL:
-      // If minimum cool temperature is achieve
+      if (millis() > buzzerPeriod)
+      { digitalWrite(buzzer, LOW); }
+      // If minimum cool temperature is achieved
       if (input <= TEMPERATURE_COOL_MIN[solderType])
       {
-        analogWrite(fan, 124);
+        analogWrite(fan, 0);
         // Retrieve current time for buzzer usage
         buzzerPeriod = millis() + 1000;
-        // Turn on buzzer and green LED to indicate completion
+        // Turn on buzzer
         digitalWrite(buzzer,   HIGH);
         // Turn off reflow process
         reflowStatus = REFLOW_STATUS_OFF;
@@ -516,7 +572,7 @@ void loop()
     case REFLOW_STATE_COMPLETE:
       if (millis() > buzzerPeriod)
       {
-        digitalWrite(buzzer,   LOW);
+        digitalWrite(buzzer, LOW);
         reflowState = REFLOW_STATE_IDLE; // Reflow process ended
       }
       break;
@@ -527,6 +583,7 @@ void loop()
       { reflowState = REFLOW_STATE_ERROR; }   // Wait until thermocouple wire is connected
       else
       { reflowState = REFLOW_STATE_IDLE; }    // Clear to perform reflow process
+      analogWrite(fan, 0);
       break;
   }  // end switch (reflowState)
   
@@ -676,6 +733,7 @@ void checkButtons()
 void lcdDisplay(int line, const char *lcdText)
 {
 
+  // Initialize display
   if (line == -1)
   {
     display.begin();
@@ -684,25 +742,26 @@ void lcdDisplay(int line, const char *lcdText)
     display.setContrast(60);
     return;
   }
-
+  
+  // Clear the display 
   if (line == 0)
   { display.clearDisplay(); }
   
-  display.setCursor(1, line * 11);
+  display.setCursor(0, line * 11);
   display.print(lcdText);
-  display.display(); // show splashscreen
+  display.display();
 
 } // end lcdDisplay()
 
 
-// When heat is called for, alternate between top and bottom heat every second
+// When heat is called for, alternate between top and bottom heat every 1/2 second
 void setHeatOn()
 {
   static uint32_t flipFlopTimer = millis(); // initialize timer
-  
+
   if (long(millis() - flipFlopTimer) > 0)
   {
-     flipFlopTimer = millis() + 1000;
+     flipFlopTimer = millis() + 500;
     if (digitalRead(heater_top) == LOW)
     {
       digitalWrite(heater_top, HIGH);
@@ -721,6 +780,7 @@ void setHeatOff()
 {
   digitalWrite(heater_top, LOW);
   digitalWrite(heater_bottom, LOW);
+  
 } // setHeatOff()
 
 //==============================================================================================================================
