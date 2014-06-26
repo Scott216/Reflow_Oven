@@ -1,9 +1,15 @@
 Reflow Oven Controller <br>
 
-Based on http://github.com/CvW/Reflow-Oven-Controller/ <br>
-Which is based on: http://github.com/rocketscream/Reflow-Oven-Controller <br>
+I found a nice toaster oven when I when I was dropping some garbage off at our town's e-waste dumpster.  It was in excellent condition.  It has heating three heating elements on the top and three on the bottom . It had a microcontroller to control everything, so it was a bit more complex then a toaster with just a couple of knobs.  My plan was to remove the micro controller PCB and replace it with my own.  The heating elements are controlled by a couple of (triacs BTA26-600B).  I hadn't used triacs before and had to do a little research on them.  One unusual aspect of the toaster design is that the microcontroller board was floating on the 110 VAC line.  This means that the 5 VDC supply voltage was over 100 volts if measure from mains ground.  But the digital ground was only 5 volts less.  So to the micro controller board this was fine, but the whole PCB was essentially about 110 VAC.  I wasn't really comfortable with this, so I hacked the power supply board a bit so it output straight 5 volts.  it also output -9 volts. <br>
 
-Main Changes: <br>
-Replaced MAX6675 with MAX31855 <br>
+I wanted to continue to use the big start button from the front panel, so I took the original micro controller PCB and cut it in half to keep the start button and the LEDs that lit it up.  Then I soldered some wires in a header that connected to the button and LEDs.<br>
+
+I designed a PCB with Cadsoft Eagle and milled it out on my ShapeOko CNC router.  This was one of the first PCBs I did on the ShapeOko and it turned out pretty well (after a few revs). 
+I had to figure out how to trigger the triacs properly.  At first I didn't realize I had to trigger when the AC voltage crossed zero volts, this cause some magic smoke to be released from one of the resistors.  This was easily fixed.  Then I got a couple of Fairchild MOC3032 zero-crossover opto-couplers.  I had a Nokia 5110 display from Adafruit which was a great fit for the existing display window.  I used an Arduino Pro-mini (3.3 v) from Sparkfun to control everything.  To measure the temperature I have a thermocouple from Adafruit and Adafruit's thermocouple amplifier.  <br>
+
+For the Arduino code I I grabbed some code from here: Based on http://github.com/CvW/Reflow-Oven-Controller/, Which is based on: http://github.com/rocketscream/Reflow-Oven-Controller.  There was a bug in the debounce code and I replaced the MAX6675 with MAX31855 thermocouple amplifier.   There a bunch of other little changes.  The code has two solder temperature profiles that you can choose between (by pressing the bake button). <br>
+
+This toaster is not a convection toaster where it circulates the air around, but I thought this would be a nice feature. So I used a little motor that a salvaged from an inkjet printer to power a 3.5 inch aluminum fan blade I ordered from McMaster (17545K63).  I used a 3/16 bronze flange busing (McMaster 9440T63) to support the brass shaft. It's a bit noisy, but works pretty well.  Since the reflow oven isn't an that long, not a lot of heat is conducted to the motor from the shaft. <br>  
+
 
 
