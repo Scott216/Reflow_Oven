@@ -1,7 +1,9 @@
+// Uses Arduino ProMini 3.3 volts
+
 // to do
 // had hall effect sensor to detect fan current and shut down if too high - maybe
 // put a switch on the fan - maybel
-
+// PCB Circuit swaps D2 and D4
 
 /*******************************************************************************
  * Title: Reflow Oven Controller
@@ -113,6 +115,8 @@
  * 1.30      Buzzer sounds and each stage in reflow.  Adjusted heat on to better balance top and bottom heaters, display profile when idle
  * 1.31      Added mircostepping temp target to pre-heat stage, show setpoint temp in display
  * 1.32      Fan was not turning off after cool period was over, should be fixed now 
+ * 1.33      Changed contrast, moved inputs to match new PCB
+ * 1.34      Adjusted contrast 
  *******************************************************************************/
 
 #include "Adafruit_MAX31855.h"  // http://github.com/adafruit/Adafruit-MAX31855-library
@@ -228,9 +232,9 @@ const int thermocoupleCLK = A1;
 
 // I/O
 const int spareBtn =          1;  // Spare pushbutton
-const int changeProfileBtn  = 2;  // Change profile button, , on interrupt pin (in case you want to use them
+const int changeProfileBtn  = 4;  // Change profile button, , on interrupt pin (in case you want to use them
 const int cycleStartStopBtn = 3;  // Start-stop button, on interrupt pin (in case you want to use them
-const int grnLED =            4;  // Blinks when oven is on
+const int grnLED =            2;  // Blinks when oven is on
 const int buzzer =            5;  // PWM pin - useful if you want to use a piezo buzzer
 const int fan =               6;  // PWM pin
 const int heater_top =        7;
@@ -244,7 +248,7 @@ const int dispDC =            12;
 const int dispCS =            11;
 const int dispRst =           10;
 
-// Spare D0, A4, A6, A7
+// Spare D0, A4, A5, A6, A7
 
 const int ledOn = LOW;   // green LEDs on original circuit board are on when LOW (uses PNP transistor)
 const int ledOff = HIGH;
@@ -313,11 +317,11 @@ void setup()
   // Start-up
   lcdDisplay(-1, "");  // initialze display
   lcdDisplay(0, "Reflow");
-  lcdDisplay(1, "Oven 1.32");
+  lcdDisplay(1, "Oven 1.34");
   digitalWrite(buzzer, HIGH);
   delay(500);
   digitalWrite(buzzer, LOW);
-  delay(1000);
+  delay(1500);
   
   nextCheck = millis();  // Initialize time keeping variable
   nextRead =  millis();  // Initialize thermocouple reading varible
@@ -649,6 +653,7 @@ void getTemperature()
 //==============================================================================================================================
 void checkButtons()
 {
+  
   // If button is pressed
   if ( cycleStartStopStatus == true )
   {
@@ -739,7 +744,7 @@ void lcdDisplay(int line, const char *lcdText)
     display.begin();
     display.setTextSize(1);
     display.setTextColor(BLACK);
-    display.setContrast(60);
+    display.setContrast(70);
     return;
   }
   
