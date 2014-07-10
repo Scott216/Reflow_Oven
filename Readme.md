@@ -11,7 +11,10 @@ For the Arduino code I started with code from here: http://github.com/CvW/Reflow
 
 This toaster is not a convection toaster where it circulates the air around, but I thought this would be a nice feature. So I used a little motor that I salvaged from an inkjet printer to power a 3.5 inch aluminum fan blade I ordered from McMaster (17545K63).  I used a 3/16 bronze flange busing (McMaster 9440T63) to support the brass shaft through the sheet metal side. The fan is a bit noisy, but works pretty well.  Since the reflow oven isn't an that long, not a lot of heat is conducted to the motor from the shaft. <br>  
 
-I would like to have an interior light to illuminate the PCB as it's being reflowed, but I haven't figured out how to do that yet.
+I would like to have an interior light to illuminate the PCB as it's being reflowed, but I haven't figured out how to do that yet. <br>
+
+You can see some pictures on [flickr](https://www.flickr.com/photos/37101040@N00/sets/72157645550432296/) or in the \photos directory of the repo. <br>
+
 
 
 
