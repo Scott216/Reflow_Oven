@@ -116,8 +116,10 @@
  * 1.31      Added mircostepping temp target to pre-heat stage, show setpoint temp in display
  * 1.32      Fan was not turning off after cool period was over, should be fixed now 
  * 1.33      Changed contrast, moved inputs to match new PCB
- * 1.34      Adjusted contrast 
+ * 1.34      Adjusted contrast
+ * 1.35      Adjusted contrast again, added more beeps when cooling stage starts 
  *******************************************************************************/
+#define VERSION  "Oven 1.35"
 
 #include "Adafruit_MAX31855.h"  // http://github.com/adafruit/Adafruit-MAX31855-library
 #include "PID_v1.h"             // http://github.com/br3ttb/Arduino-PID-Library/
@@ -317,7 +319,7 @@ void setup()
   // Start-up
   lcdDisplay(-1, "");  // initialze display
   lcdDisplay(0, "Reflow");
-  lcdDisplay(1, "Oven 1.34");
+  lcdDisplay(1, VERSION);
   digitalWrite(buzzer, HIGH);
   delay(500);
   digitalWrite(buzzer, LOW);
@@ -551,6 +553,14 @@ void loop()
         // Proceed to cooling state
         reflowState = REFLOW_STATE_COOL;
         digitalWrite(buzzer, HIGH);
+        delay(100);
+        digitalWrite(buzzer, LOW);
+        delay(100);
+        digitalWrite(buzzer, HIGH);
+        delay(100);
+        digitalWrite(buzzer, LOW);
+        delay(100);
+        digitalWrite(buzzer, HIGH);
         buzzerPeriod = millis() + 100;
       }
       break;
@@ -744,7 +754,7 @@ void lcdDisplay(int line, const char *lcdText)
     display.begin();
     display.setTextSize(1);
     display.setTextColor(BLACK);
-    display.setContrast(70);
+    display.setContrast(40);
     return;
   }
   
