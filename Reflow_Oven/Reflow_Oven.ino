@@ -4,6 +4,7 @@
 // had hall effect sensor to detect fan current and shut down if too high - maybe
 // put a switch on the fan - maybel
 // PCB Circuit swaps D2 and D4
+// Put limits on setpoints so they cont go to high if there is a problem
 
 /*******************************************************************************
  * Title: Reflow Oven Controller
@@ -118,8 +119,10 @@
  * 1.33      Changed contrast, moved inputs to match new PCB
  * 1.34      Adjusted contrast
  * 1.35      Adjusted contrast again, added more beeps when cooling stage starts 
+ * 1.36      Changed constast from 40 to 50.  Added FAN_OFF constant
+ 
  *******************************************************************************/
-#define VERSION  "Oven 1.35"
+#define VERSION  "ver 1.36"
 
 #include "Adafruit_MAX31855.h"  // http://github.com/adafruit/Adafruit-MAX31855-library
 #include "PID_v1.h"             // http://github.com/br3ttb/Arduino-PID-Library/
@@ -255,6 +258,7 @@ const int dispRst =           10;
 const int ledOn = LOW;   // green LEDs on original circuit board are on when LOW (uses PNP transistor)
 const int ledOff = HIGH;
 const byte FAN_ON = 255;
+const byte FAN_OFF =  0; 
 
 // ***** PID CONTROL VARIABLES *****
 double setpoint;
@@ -302,23 +306,23 @@ void printData(printData_t whatToPrint);
 void setup()
 {
   // Configure I/O pins
-  pinMode(dispLED,       OUTPUT);
-  pinMode(heater_top,    OUTPUT);
-  pinMode(heater_bottom, OUTPUT);
-  pinMode(fan,           OUTPUT);
-  pinMode(buzzer,        OUTPUT);
-  pinMode(grnLED,        OUTPUT);
+  pinMode(dispLED,                 OUTPUT);  // pwm output
+  pinMode(heater_top,              OUTPUT);
+  pinMode(heater_bottom,           OUTPUT);
+  pinMode(fan,                     OUTPUT);  // pwm output
+  pinMode(buzzer,                  OUTPUT);
+  pinMode(grnLED,                  OUTPUT);
   pinMode(cycleStartStopBtn, INPUT_PULLUP);
   pinMode(changeProfileBtn,  INPUT_PULLUP);
   pinMode(spareBtn,          INPUT_PULLUP);
   
-  analogWrite(dispLED, 127);  // turn backlignt on at 50%
+  analogWrite(dispLED, 127);  // turn LCD backlignt on at 50%
   
   Serial.begin(9600);
 
   // Start-up
   lcdDisplay(-1, "");  // initialze display
-  lcdDisplay(0, "Reflow");
+  lcdDisplay(0, "Reflow Oven");
   lcdDisplay(1, VERSION);
   digitalWrite(buzzer, HIGH);
   delay(500);
@@ -330,7 +334,7 @@ void setup()
 
   Serial.println("Finished setup");
   
-}  // setup()
+}  // end setup()
 
 
 //==============================================================================================================================
@@ -392,7 +396,7 @@ void loop()
       }
       else
       { 
-        // not idle, display current temp and setpoing temp
+        // not idle, display current temp and setpoint temp
         sprintf(buf, "%dC, SP %dC", (int) input, (int) setpoint );
         lcdDisplay(1, buf);
       }
@@ -446,7 +450,7 @@ void loop()
   switch (reflowState)
   {
     case REFLOW_STATE_IDLE:
-      analogWrite(fan, 0);
+      analogWrite(fan, FAN_OFF);
       
       // If button is pressed to start reflow process
       if ( cycleStartStopStatus == true )
@@ -571,7 +575,7 @@ void loop()
       // If minimum cool temperature is achieved
       if (input <= TEMPERATURE_COOL_MIN[solderType])
       {
-        analogWrite(fan, 0);
+        analogWrite(fan, FAN_OFF);
         // Retrieve current time for buzzer usage
         buzzerPeriod = millis() + 1000;
         // Turn on buzzer
@@ -597,7 +601,7 @@ void loop()
       { reflowState = REFLOW_STATE_ERROR; }   // Wait until thermocouple wire is connected
       else
       { reflowState = REFLOW_STATE_IDLE; }    // Clear to perform reflow process
-      analogWrite(fan, 0);
+      analogWrite(fan, FAN_OFF);
       break;
   }  // end switch (reflowState)
   
@@ -642,7 +646,10 @@ void getTemperature()
     {
       input = thermocouple.readCelsius();
       if ( isnan(input) )
-      { delay(150); Serial.println("Got nan"); }
+      { 
+        delay(150); 
+        Serial.println("Got nan"); 
+      }
     }
     while ( isnan(input) && (millis() < waitForValidTempTimer) );
     
@@ -656,7 +663,7 @@ void getTemperature()
     }
   }
 
-}
+}  // end getTemperature()
 
 //==============================================================================================================================
 // Check the two pushbuttons: Oven Start/Stop, Change Profile
@@ -754,7 +761,7 @@ void lcdDisplay(int line, const char *lcdText)
     display.begin();
     display.setTextSize(1);
     display.setTextColor(BLACK);
-    display.setContrast(40);
+    display.setContrast(50);
     return;
   }
   
@@ -769,7 +776,9 @@ void lcdDisplay(int line, const char *lcdText)
 } // end lcdDisplay()
 
 
+//==============================================================================================================================
 // When heat is called for, alternate between top and bottom heat every 1/2 second
+//==============================================================================================================================
 void setHeatOn()
 {
   static uint32_t flipFlopTimer = millis(); // initialize timer
@@ -789,14 +798,18 @@ void setHeatOn()
     }
   }
   
-}  //setHeatOnIO
+}  // end setHeatOnIO()
 
+
+//==============================================================================================================================
+//  Turn heater off
+//==============================================================================================================================
 void setHeatOff()
 {
   digitalWrite(heater_top, LOW);
   digitalWrite(heater_bottom, LOW);
   
-} // setHeatOff()
+} // end setHeatOff()
 
 //==============================================================================================================================
 //  Print data to serial printer
@@ -825,7 +838,6 @@ void printData(printData_t whatToPrint)
     Serial.print("\t");
     Serial.print(solderType);
     Serial.println("");
-    
   }
 
 }  // end printData()
