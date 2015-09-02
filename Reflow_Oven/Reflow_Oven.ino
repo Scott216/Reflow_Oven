@@ -120,9 +120,10 @@
  * 1.34      Adjusted contrast
  * 1.35      Adjusted contrast again, added more beeps when cooling stage starts 
  * 1.36      Changed constast from 40 to 50.  Added FAN_OFF constant
+ * 1.37      Added max setpoint to prevent run-away temp, renamed global variables
  
  *******************************************************************************/
-#define VERSION  "ver 1.36"
+#define VERSION  "ver 1.37"
 
 #include "Adafruit_MAX31855.h"  // http://github.com/adafruit/Adafruit-MAX31855-library
 #include "PID_v1.h"             // http://github.com/br3ttb/Arduino-PID-Library/
@@ -165,7 +166,7 @@ enum printData_t { PRINT_HEADER, PRINT_DATA};
 #define PREHT_MICRO_PERIOD         4250   // set new pre-heat target temp every 4-1/4 seconds
 #define SOAK_MICRO_PERIOD          9000   // set new soak target temp evey 9 seconds
 #define DEBOUNCE_PERIOD_MIN          50
-
+#define MAX_ALLOWED_TEMP            250  // Max temp oven is allowed to go, Centegrade
 
 // Below temperature constants are for Pb-Free Operation
 enum solderProfile_t
@@ -261,9 +262,9 @@ const byte FAN_ON = 255;
 const byte FAN_OFF =  0; 
 
 // ***** PID CONTROL VARIABLES *****
-double setpoint;
-double input;
-double output;
+double g_pid_setpoint;
+double g_pid_input;
+double g_pid_output;
 
 const int windowSize = 2000;     // Set PID window size
 uint32_t windowStartTime;
@@ -282,7 +283,7 @@ bool            cycleStartStopStatus;  // Button press status
 int             timerSeconds;          // Seconds timer
 
 // Specify PID control interface
-PID reflowOvenPID(&input, &output, &setpoint, PID_KP_PREHEAT, PID_KI_PREHEAT, PID_KD_PREHEAT, DIRECT);
+PID reflowOvenPID(&g_pid_input, &g_pid_output, &g_pid_setpoint, PID_KP_PREHEAT, PID_KI_PREHEAT, PID_KD_PREHEAT, DIRECT);
 
 // Adafruit_SSD1306 display(dispRst);
 Adafruit_PCD8544 display = Adafruit_PCD8544(dispClk, dispDin, dispDC, dispCS, dispRst);
@@ -343,7 +344,7 @@ void loop()
 {
   // Initialize static variables
   static reflowState_t prevReflowState = REFLOW_STATE_IDLE;  // Use to see when reflow state changes
-  static float         prevInput = input;                    // Previous temperature used for temp rise / second calc
+  static float         prevInput = g_pid_input;                    // Previous temperature used for temp rise / second calc
   static int           stageTimeSeconds = 0;                 // Seconds in current stage
   
   getTemperature();
@@ -368,7 +369,7 @@ void loop()
     { digitalWrite(grnLED, ledOff); }
     
     // Display current system state
-    if (input > TEMPERATURE_ROOM && reflowState == REFLOW_STATE_IDLE)
+    if (g_pid_input > TEMPERATURE_ROOM && reflowState == REFLOW_STATE_IDLE)
     { lcdDisplay(0, "Not Ready"); }   // Oven needs to cool down before reflow cycle can begin
     else
     { lcdDisplay(0, lcdMessagesReflowStatus[reflowState]); }
@@ -385,7 +386,7 @@ void loop()
       if (reflowState == REFLOW_STATE_IDLE) 
       {
         // Display current temperature
-        sprintf(buf, "%dC", (int) input);
+        sprintf(buf, "%dC", (int) g_pid_input);
         lcdDisplay(1, buf);
         // display profile
         if (solderType == LOWTEMP_PROFILE)
@@ -397,7 +398,7 @@ void loop()
       else
       { 
         // not idle, display current temp and setpoint temp
-        sprintf(buf, "%dC, SP %dC", (int) input, (int) setpoint );
+        sprintf(buf, "%dC, SP %dC", (int) g_pid_input, (int) g_pid_setpoint );
         lcdDisplay(1, buf);
       }
       // When stage changes, reset seconds for current stage
@@ -418,19 +419,19 @@ void loop()
         // Need check if rate is negative or positive and put a negative in sprintf because if the rate is -0.5, you can't have -0 as the integer portion
         if ( stageTimeSeconds % 5 == 0)
         {
-          if ( input >= prevInput )
+          if ( g_pid_input >= prevInput )
           {
-            riseRate = (input - prevInput) / 5.0;
+            riseRate = (g_pid_input - prevInput) / 5.0;
             isPositiveRate = true;
           }
           else
           {
-            riseRate = (prevInput - input) / 5.0;
+            riseRate = (prevInput - g_pid_input) / 5.0;
             isPositiveRate = false;
           }
           iRiseRate = (int) riseRate;
           fRiseRate = (riseRate - iRiseRate ) * 100;
-          prevInput = input;
+          prevInput = g_pid_input;
         }
         if ( isPositiveRate )
         { sprintf(buf, "%d.%d C/Sec", iRiseRate, fRiseRate ); }
@@ -456,7 +457,7 @@ void loop()
       if ( cycleStartStopStatus == true )
       {
         // Ensure current temperature is comparable to room temperature
-        if (input <= TEMPERATURE_ROOM)
+        if (g_pid_input <= TEMPERATURE_ROOM)
         {
           digitalWrite(buzzer, HIGH);
           delay(100);
@@ -467,7 +468,7 @@ void loop()
           // Initialize PID control window starting time
           windowStartTime = millis();
           // Ramp up to first section of pre-heat temperature
-          setpoint = input + PREHT_TEMPERATURE_STEP;
+          g_pid_setpoint = g_pid_input + PREHT_TEMPERATURE_STEP;
           
           // Tell the PID to range between 0 and the full window size
           reflowOvenPID.SetOutputLimits(0, windowSize);
@@ -500,16 +501,19 @@ void loop()
       {
         timerPreHeat = millis() + PREHT_MICRO_PERIOD;  // Increase setpoint temp in small steps
         // Increment micro setpoint
-        setpoint += PREHT_TEMPERATURE_STEP;
+        g_pid_setpoint += PREHT_TEMPERATURE_STEP;
+        if ( g_pid_setpoint > MAX_ALLOWED_TEMP )
+        { g_pid_setpoint = MAX_ALLOWED_TEMP; } 
+        
         // If minimum soak temperature is achieved
-        if (input >= TEMPERATURE_SOAK_MIN[solderType])
+        if (g_pid_input >= TEMPERATURE_SOAK_MIN[solderType])
         {
           // Chop soaking period into smaller sub-period
           timerSoak = millis() + SOAK_MICRO_PERIOD; // First target temp for soak cycle with is about to start
           // Set less agressive PID parameters for soaking ramp
           reflowOvenPID.SetTunings(PID_KP_SOAK, PID_KI_SOAK, PID_KD_SOAK);
           // Ramp up to first section of soaking temperature
-          setpoint = TEMPERATURE_SOAK_MIN[solderType] + SOAK_TEMPERATURE_STEP;
+          g_pid_setpoint = TEMPERATURE_SOAK_MIN[solderType] + SOAK_TEMPERATURE_STEP;
           // Proceed to soaking state
           reflowState = REFLOW_STATE_SOAK;
           digitalWrite(buzzer,  HIGH);
@@ -527,13 +531,16 @@ void loop()
       {
         timerSoak = millis() + SOAK_MICRO_PERIOD;  // Increase setpoint temp in small steps
         // Increment micro setpoint
-        setpoint += SOAK_TEMPERATURE_STEP;
-        if (setpoint > TEMPERATURE_SOAK_MAX[solderType])
+        g_pid_setpoint += SOAK_TEMPERATURE_STEP;
+        if ( g_pid_setpoint > MAX_ALLOWED_TEMP )
+        { g_pid_setpoint = MAX_ALLOWED_TEMP; } 
+        
+        if (g_pid_setpoint > TEMPERATURE_SOAK_MAX[solderType])
         {
           // Set agressive PID parameters for reflow ramp
           reflowOvenPID.SetTunings(PID_KP_REFLOW, PID_KI_REFLOW, PID_KD_REFLOW);
           // Ramp up to first section of soaking temperature
-          setpoint = TEMPERATURE_REFLOW_MAX[solderType];
+          g_pid_setpoint = TEMPERATURE_REFLOW_MAX[solderType];
           // Proceed to reflowing state
           reflowState = REFLOW_STATE_REFLOW;
           digitalWrite(buzzer, HIGH);
@@ -548,12 +555,12 @@ void loop()
       analogWrite(fan, FAN_ON);
       // Avoid hovering at peak temperature for too long
       // Crude method that works like a charm and safe for the components
-      if (input >= (TEMPERATURE_REFLOW_MAX[solderType] - 5))
+      if (g_pid_input >= (TEMPERATURE_REFLOW_MAX[solderType] - 5))
       {
         // Set PID parameters for cooling ramp
         reflowOvenPID.SetTunings(PID_KP_REFLOW, PID_KI_REFLOW, PID_KD_REFLOW);  // same params as reflow
         // Ramp down to minimum cooling temperature
-        setpoint = TEMPERATURE_COOL_MIN[solderType];
+        g_pid_setpoint = TEMPERATURE_COOL_MIN[solderType];
         // Proceed to cooling state
         reflowState = REFLOW_STATE_COOL;
         digitalWrite(buzzer, HIGH);
@@ -573,7 +580,7 @@ void loop()
       if (millis() > buzzerPeriod)
       { digitalWrite(buzzer, LOW); }
       // If minimum cool temperature is achieved
-      if (input <= TEMPERATURE_COOL_MIN[solderType])
+      if (g_pid_input <= TEMPERATURE_COOL_MIN[solderType])
       {
         analogWrite(fan, FAN_OFF);
         // Retrieve current time for buzzer usage
@@ -597,7 +604,7 @@ void loop()
       
     case REFLOW_STATE_ERROR:
       // thermocouple error
-      if (isnan(input))
+      if (isnan(g_pid_input))
       { reflowState = REFLOW_STATE_ERROR; }   // Wait until thermocouple wire is connected
       else
       { reflowState = REFLOW_STATE_IDLE; }    // Clear to perform reflow process
@@ -618,7 +625,7 @@ void loop()
     
     if((now - windowStartTime) > windowSize)
     {   windowStartTime += windowSize;  }  // Time to shift the Relay Window
-    if( output > (now - windowStartTime) )
+    if( g_pid_output > (now - windowStartTime) )
     { setHeatOn(); }
     else 
     { setHeatOff(); }
@@ -644,17 +651,17 @@ void getTemperature()
     uint32_t waitForValidTempTimer = millis() + 30000;
     do
     {
-      input = thermocouple.readCelsius();
-      if ( isnan(input) )
+      g_pid_input = thermocouple.readCelsius();
+      if ( isnan(g_pid_input) )
       { 
         delay(150); 
         Serial.println("Got nan"); 
       }
     }
-    while ( isnan(input) && (millis() < waitForValidTempTimer) );
+    while ( isnan(g_pid_input) && (millis() < waitForValidTempTimer) );
     
     // If thermocouple is not connected
-    if (isnan(input) )
+    if (isnan(g_pid_input) )
     {
       // Illegal operation without thermocouple
       reflowState = REFLOW_STATE_ERROR;
@@ -826,9 +833,9 @@ void printData(printData_t whatToPrint)
     // Send temperature and time stamp to serial monitor, this can be used to graph profile
     Serial.print(timerSeconds);
     Serial.print("\t");
-    Serial.print(setpoint);
+    Serial.print(g_pid_setpoint);
     Serial.print("   \t");
-    Serial.print(input);
+    Serial.print(g_pid_input);
     Serial.print("   \t");
     Serial.print(reflowState);
     Serial.print("\t");
